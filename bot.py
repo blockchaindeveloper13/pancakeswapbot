@@ -34,11 +34,11 @@ pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake
 # WBNB adresi
 wbnb_address = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 
-# Unicrypt kilit sözleşmesi (örnek, gerekirse güncellenir)
+# Unicrypt kilit sözleşmesi
 unicrypt_locker_address = "0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214"  # BSC Unicrypt
 unicrypt_abi = [
     {
-        "constant": true,
+        "constant": True,
         "inputs": [{"name": "lpToken", "type": "address"}],
         "name": "getLockedTokens",
         "outputs": [{"name": "", "type": "uint256"}],
@@ -49,9 +49,12 @@ unicrypt_contract = web3.eth.contract(address=unicrypt_locker_address, abi=unicr
 
 # DexScreener’dan token verisi çek
 def get_dexscreener_tokens():
-    url = "https://api.dexscreener.com/latest/dex/pairs/bsc"  # BSC chain
+    url = "https://api.dexscreener.com/latest/dex/pairs/bsc?limit=100"
+    headers = {}
+    if os.getenv("DEXSCREENER_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.getenv('DEXSCREENER_API_KEY')}"
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
         return response.json().get("pairs", [])
     except Exception as e:
@@ -64,7 +67,7 @@ def is_liquidity_locked(pair_address):
         locked_amount = unicrypt_contract.functions.getLockedTokens(pair_address).call()
         return locked_amount > 0  # Kilitli LP token varsa True
     except:
-        return False  # Unicrypt’te veri yoksa False
+        return False
 
 # Token verisi çek
 def get_pair_data(pair_address):
@@ -119,7 +122,7 @@ def scan_tokens():
         if datetime.now() - created_time > timedelta(hours=48):
             continue
 
-        # Likidite kilidi kontrolü (DexScreener’da yoksa Unicrypt fallback)
+        # Likidite kilidi kontrolü
         liquidity_locked = pair.get("liquidity", {}).get("lockedPercentage", 0)
         if liquidity_locked < 100:
             if not is_liquidity_locked(pair_address):
