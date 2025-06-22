@@ -4,8 +4,6 @@ import time
 import json
 import requests
 from dotenv import load_dotenv
-import pandas as pd
-import pandas_ta as ta
 
 # Ortam değişkenlerini yükle
 load_dotenv()
@@ -28,8 +26,6 @@ with open("pancakeswap_factory_abi.json") as f:
     pancake_factory_abi = json.load(f)
 with open("pair_abi.json") as f:
     pair_abi = json.load(f)
-with open("erc20_abi.json") as f:
-    erc20_abi = json.load(f)
 
 pancake_router = web3.eth.contract(address=pancake_router_address, abi=pancake_router_abi)
 pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake_factory_abi)
@@ -55,9 +51,6 @@ unicrypt_contract = web3.eth.contract(address=unicrypt_locker_address, abi=locke
 team_finance_contract = web3.eth.contract(address=team_finance_address, abi=locker_abi)
 pinklock_contract = web3.eth.contract(address=pinklock_address, abi=locker_abi)
 dxsale_contract = web3.eth.contract(address=dxsale_address, abi=locker_abi)
-
-# Alınan token’ları takip et
-portfolio = {}  # {token_address: {"buy_price": float, "buy_time": timestamp, "amount": float, "pair_address": str}}
 
 # DexScreener’dan PancakeSwap pair’lerini çek
 def get_dexscreener_tokens():
@@ -134,29 +127,17 @@ def get_pair_data(pair_address):
         "liquidity": liquidity_usd
     }
 
-# Fiyat geçmişi çek (RSI için, simüle edilmiş)
-def get_price_history(token_address, pair_address):
+# Mevcut fiyatı çek
+def get_current_price(pair_address):
     url = f"https://api.dexscreener.com/latest/dex/pairs/bsc/{pair_address}"
     try:
         response = requests.get(url)
         response.raise_for_status()
         pair_data = response.json().get("pairs", [])[0]
-        prices = []
-        for i in range(14):  # 14 dönem
-            price = float(pair_data.get("priceUsd", 0)) * (1 - i * 0.01)
-            prices.append(price)
-        return prices[::-1]
+        return float(pair_data.get("priceUsd", 0))
     except Exception as e:
-        print(f"Fiyat geçmişi hatası: {e}")
-        return []
-
-# RSI hesapla
-def calculate_rsi(prices):
-    if len(prices) < 14:
-        return None
-    df = pd.DataFrame(prices, columns=["close"])
-    df["rsi"] = ta.rsi(df["close"], length=14)
-    return df["rsi"].iloc[-1]
+        print(f"Fiyat çekme hatası: {e}")
+        return 0
 
 # Token tarama
 def scan_tokens():
@@ -237,104 +218,16 @@ def buy_token(token_address, pair_address):
         tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
         receipt = web3.eth.wait_for_transaction_receipt(tx_hash)
 
-        # Alınan token miktarını bul
-        token_contract = web3.eth.contract(address=token_address, abi=erc20_abi)
-        token_amount = token_contract.functions.balanceOf(wallet_address).call() / 10**18
         price = get_current_price(pair_address)
-
-        portfolio[token_address] = {
-            "buy_price": price,
-            "buy_time": time.time(),
-            "amount": token_amount,
-            "pair_address": pair_address
-        }
-        print(f"Alım işlemi: {tx_hash.hex()}, Miktar: {token_amount}, Fiyat: {price} USD")
+        take_profit_price = price * 1.05
+        print(f"Alım işlemi: {tx_hash.hex()}, Fiyat: {price} USD, Kâr al hedefi: {take_profit_price} USD")
     except Exception as e:
         print(f"Alım hatası: {e}")
-
-# Satış işlemi
-def sell_token(token_address):
-    token_data = portfolio.get(token_address)
-    if not token_data:
-        return
-
-    token_contract = web3.eth.contract(address=token_address, abi=erc20_abi)
-    amount_to_sell = int(token_data["amount"] * 10**18)
-
-    # Onay ver
-    approve_tx = token_contract.functions.approve(
-        pancake_router_address,
-        amount_to_sell
-    ).build_transaction({
-        "from": wallet_address,
-        "gas": 100000,
-        "gasPrice": web3.to_wei("5", "gwei"),
-        "nonce": web3.eth.get_transaction_count(wallet_address)
-    })
-    signed_approve_tx = web3.eth.account.sign_transaction(approve_tx, private_key)
-    approve_tx_hash = web3.eth.send_raw_transaction(signed_approve_tx.rawTransaction)
-    web3.eth.wait_for_transaction_receipt(approve_tx_hash)
-
-    # Satış yap
-    path = [web3.to_checksum_address(token_address), web3.to_checksum_address(wbnb_address)]
-    try:
-        sell_tx = pancake_router.functions.swapExactTokensForETH(
-            amount_to_sell,
-            0,
-            path,
-            wallet_address,
-            int(time.time()) + 60
-        ).build_transaction({
-            "from": wallet_address,
-            "gas": 200000,
-            "gasPrice": web3.to_wei("5", "gwei"),
-            "nonce": web3.eth.get_transaction_count(wallet_address)
-        })
-        signed_sell_tx = web3.eth.account.sign_transaction(sell_tx, private_key)
-        sell_tx_hash = web3.eth.send_raw_transaction(signed_sell_tx.rawTransaction)
-        receipt = web3.eth.wait_for_transaction_receipt(sell_tx_hash)
-        print(f"Satış işlemi: {sell_tx_hash.hex()}, Fiyat: {get_current_price(token_data['pair_address'])} USD")
-        del portfolio[token_address]
-    except Exception as e:
-        print(f"Satış hatası: {e}")
-
-# Mevcut fiyatı çek
-def get_current_price(pair_address):
-    url = f"https://api.dexscreener.com/latest/dex/pairs/bsc/{pair_address}"
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        pair_data = response.json().get("pairs", [])[0]
-        return float(pair_data.get("priceUsd", 0))
-    except Exception as e:
-        print(f"Fiyat çekme hatası: {e}")
-        return 0
-
-# Portföyü kontrol et ve kâr al
-def check_portfolio():
-    for token_address, data in list(portfolio.items()):
-        current_price = get_current_price(data["pair_address"])
-        buy_price = data["buy_price"]
-        price_history = get_price_history(token_address, data["pair_address"])
-        rsi = calculate_rsi(price_history)
-
-        # %5 kâr hedefi
-        if current_price >= buy_price * 1.05:
-            print(f"%5 kâr hedefi ulaşıldı: {token_address} (Alım: {buy_price}, Şu an: {current_price})")
-            sell_token(token_address)
-        # RSI > 70
-        elif rsi and rsi > 70:
-            print(f"RSI aşırı alım: {token_address} (RSI: {rsi}, Alım: {buy_price}, Şu an: {current_price})")
-            sell_token(token_address)
 
 # Ana döngü
 if __name__ == "__main__":
     while True:
         try:
-            # Portföyü kontrol et
-            check_portfolio()
-
-            # Yeni token tara
             token_to_buy = scan_tokens()
             if token_to_buy:
                 pair_address = next(
