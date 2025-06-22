@@ -34,9 +34,13 @@ pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake
 with open("token_abi.json") as f:
     token_abi = json.load(f)
 
-# Fiyat verisi çekme (örneğin DexScreener API)
-def get_token_data(token_address):
-    url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+# Pair ABI (likidite havuzları için)
+with open("pair_abi.json") as f:
+    pair_abi = json.load(f)
+
+# Fiyat verisi çekme (DexScreener API)
+def get_token_data(pair_address):
+    url = f"https://api.dexscreener.com/latest/dex/pairs/bsc/{pair_address}"
     response = requests.get(url).json()
     if response["pairs"]:
         pair = response["pairs"][0]
@@ -44,7 +48,8 @@ def get_token_data(token_address):
             "price": float(pair["priceUsd"]),
             "liquidity": float(pair["liquidity"]["usd"]),
             "volume_1h": float(pair["volume"]["h1"]),
-            "price_history": [float(p["priceUsd"]) for p in pair.get("priceHistory", [])]
+            "price_history": [float(p["priceUsd"]) for p in pair.get("priceHistory", [])],
+            "token_address": pair["baseToken"]["address"]
         }
     return None
 
@@ -58,17 +63,17 @@ def calculate_rsi(prices):
 
 # Token tarama
 def scan_tokens():
-    # Örnek: Sabit bir token listesi (gerçekte dinamik tarama gerekir)
-    token_list = [
-        "0x0E09FaBB73B087e7D9F1B8bE76B54D47F3A0F1E9",  # CAKE
-        "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56",  # BUSD
-        # Daha fazla token eklemek için PancakeSwap Factory'den pair'leri çek
-    ]
+    # Tüm pair'leri çek
+    pair_count = pancake_factory.functions.allPairsLength().call()
+    print(f"Toplam {pair_count} pair bulundu.")
+    
     best_token = None
     best_score = float("inf")
-
-    for token_address in token_list:
-        data = get_token_data(token_address)
+    
+    # İlk 100 pair'i tara (performans için sınırlı, artırılabilir)
+    for i in range(min(100, pair_count)):
+        pair_address = pancake_factory.functions.allPairs(i).call()
+        data = get_token_data(pair_address)
         if not data:
             continue
 
@@ -90,7 +95,7 @@ def scan_tokens():
         score = rsi / volume_ratio
         if score < best_score:
             best_score = score
-            best_token = token_address
+            best_token = data["token_address"]
 
     return best_token
 
