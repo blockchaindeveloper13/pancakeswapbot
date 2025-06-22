@@ -2,9 +2,9 @@ from web3 import Web3
 import os
 import time
 import json
-import pandas as pd
-import pandas_ta as ta
+import requests
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 # Ortam değişkenlerini yükle
 load_dotenv()
@@ -34,14 +34,46 @@ pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake
 # WBNB adresi
 wbnb_address = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 
-# Fiyat ve likidite hesaplama
+# Unicrypt kilit sözleşmesi (örnek, gerekirse güncellenir)
+unicrypt_locker_address = "0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214"  # BSC Unicrypt
+unicrypt_abi = [
+    {
+        "constant": true,
+        "inputs": [{"name": "lpToken", "type": "address"}],
+        "name": "getLockedTokens",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    }
+]
+unicrypt_contract = web3.eth.contract(address=unicrypt_locker_address, abi=unicrypt_abi)
+
+# DexScreener’dan token verisi çek
+def get_dexscreener_tokens():
+    url = "https://api.dexscreener.com/latest/dex/pairs/bsc"  # BSC chain
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.json().get("pairs", [])
+    except Exception as e:
+        print(f"DexScreener hatası: {e}")
+        return []
+
+# Likidite kilidi kontrolü (Unicrypt fallback)
+def is_liquidity_locked(pair_address):
+    try:
+        locked_amount = unicrypt_contract.functions.getLockedTokens(pair_address).call()
+        return locked_amount > 0  # Kilitli LP token varsa True
+    except:
+        return False  # Unicrypt’te veri yoksa False
+
+# Token verisi çek
 def get_pair_data(pair_address):
     pair_contract = web3.eth.contract(address=pair_address, abi=pair_abi)
     reserves = pair_contract.functions.getReserves().call()
     token0 = pair_contract.functions.token0().call()
     token1 = pair_contract.functions.token1().call()
 
-    # Token sırasını kontrol et (WBNB/TOKEN veya TOKEN/WBNB)
+    # Token sırasını kontrol et
     is_wbnb_token0 = token0.lower() == wbnb_address.lower()
     reserve_wbnb = reserves[0] if is_wbnb_token0 else reserves[1]
     reserve_token = reserves[1] if is_wbnb_token0 else reserves[0]
@@ -51,66 +83,69 @@ def get_pair_data(pair_address):
         return None
     price = reserve_token / reserve_wbnb
     
-    # Likidite: Yaklaşık USD cinsinden (WBNB fiyatını sabit 300 USD varsayalım)
+    # Likidite: USD cinsinden (WBNB = 300 USD)
     liquidity_usd = (reserve_wbnb / 10**18) * 300
-    
-    # Fiyat geçmişi (basitlik için son 14 bloğu alalım)
-    price_history = []
-    for i in range(14):
-        try:
-            past_block = web3.eth.get_block_number() - (i * 100)
-            past_reserves = pair_contract.functions.getReserves().call(block_identifier=past_block)
-            past_price = (past_reserves[1] / past_reserves[0]) if is_wbnb_token0 else (past_reserves[0] / past_reserves[1])
-            price_history.append(past_price)
-        except:
-            price_history.append(price)
     
     token_address = token1 if is_wbnb_token0 else token0
     
     return {
         "token_address": token_address,
         "price": price,
-        "liquidity": liquidity_usd,
-        "price_history": price_history
+        "liquidity": liquidity_usd
     }
-
-# RSI hesaplama
-def calculate_rsi(prices):
-    if len(prices) < 14:
-        return None
-    series = pd.Series(prices)
-    rsi = ta.rsi(series, length=14)
-    return rsi.iloc[-1]
 
 # Token tarama
 def scan_tokens():
-    pair_count = pancake_factory.functions.allPairsLength().call()
-    print(f"Toplam {pair_count} pair bulundu.")
+    dexscreener_pairs = get_dexscreener_tokens()
+    if not dexscreener_pairs:
+        return None
     
     best_token = None
     best_score = float("inf")
     
-    # İlk 100 pair'i tara (performans için)
-    for i in range(min(100, pair_count)):
-        pair_address = pancake_factory.functions.allPairs(i).call()
+    # İlk 50 pair’i tara (Ankr limiti için)
+    for pair in dexscreener_pairs[:50]:
+        token_address = pair.get("baseToken", {}).get("address")
+        pair_address = pair.get("pairAddress")
+        created_at = pair.get("pairCreatedAt")
+        market_cap = pair.get("marketCap", float("inf"))
+        volume_24h = pair.get("volume", {}).get("h24", 0)
+        liquidity_usd = pair.get("liquidity", {}).get("usd", 0)
+
+        # Yeni listelenmiş mi? (son 48 saat)
+        if not created_at:
+            continue
+        created_time = datetime.fromtimestamp(created_at / 1000)
+        if datetime.now() - created_time > timedelta(hours=48):
+            continue
+
+        # Likidite kilidi kontrolü (DexScreener’da yoksa Unicrypt fallback)
+        liquidity_locked = pair.get("liquidity", {}).get("lockedPercentage", 0)
+        if liquidity_locked < 100:
+            if not is_liquidity_locked(pair_address):
+                continue
+
+        # Moonshot potansiyeli
+        if market_cap > 500000 or volume_24h < 100000:
+            continue
+        volume_to_market_cap = volume_24h / market_cap if market_cap > 0 else 0
+        if volume_to_market_cap < 0.2:
+            continue
+
+        # PancakeSwap’tan veri çek
         data = get_pair_data(pair_address)
-        if not data:
+        if not data or data["token_address"].lower() != token_address.lower():
             continue
 
         # Filtreleme: Minimum likidite
-        if data["liquidity"] < float(os.getenv("MIN_LIQUIDITY", 10000)):
+        if data["liquidity"] < float(os.getenv("MIN_LIQUIDITY", 5000)):
             continue
 
-        # RSI hesaplama
-        rsi = calculate_rsi(data["price_history"])
-        if rsi is None or rsi > float(os.getenv("RSI_THRESHOLD", 30)):
-            continue
-
-        # Skor: RSI bazlı
-        score = rsi
+        # Skor: Volume/Market Cap oranı
+        score = 1 / volume_to_market_cap  # Daha yüksek oran, daha düşük skor
         if score < best_score:
             best_score = score
-            best_token = data["token_address"]
+            best_token = token_address
 
     return best_token
 
@@ -145,7 +180,7 @@ if __name__ == "__main__":
                 buy_token(token_to_buy)
             else:
                 print("Uygun token bulunamadı.")
-            time.sleep(int(os.getenv("CHECK_INTERVAL", 60)))
+            time.sleep(int(os.getenv("CHECK_INTERVAL", 120)))
         except Exception as e:
             print(f"Hata: {e}")
-            time.sleep(60)
+            time.sleep(120)
