@@ -18,8 +18,8 @@ account = web3.eth.account.from_key(private_key)
 wallet_address = account.address
 
 # PancakeSwap Router ve Factory
-pancake_router_address = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
-pancake_factory_address = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73"
+pancake_router_address = web3.to_checksum_address("0x10ED43C718714eb63d5aA57B78B54704E256024E")
+pancake_factory_address = web3.to_checksum_address("0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73")
 with open("pancakeswap_router_abi.json") as f:
     pancake_router_abi = json.load(f)
 with open("pancakeswap_factory_abi.json") as f:
@@ -31,13 +31,13 @@ pancake_router = web3.eth.contract(address=pancake_router_address, abi=pancake_r
 pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake_factory_abi)
 
 # WBNB adresi
-wbnb_address = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+wbnb_address = web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c")
 
 # Kilit sözleşmeleri
-unicrypt_locker_address = "0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214"
-team_finance_address = "0xE2fE530C047f2d85298b07D9333C05737f1435fB"
-pinklock_address = "0x7ee058420e5937496F5a2096f0Fb5F40b050C0A6"
-dxsale_address = "0x6b4d6F732B49dD77B6C7aD784E0D0C067C4B5B43"
+unicrypt_locker_address = web3.to_checksum_address("0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214")
+team_finance_address = web3.to_checksum_address("0xE2fE530C047f2d85298b07D9333C05737f1435fB")
+pinklock_address = web3.to_checksum_address("0x407993575c91ce7643a4d4cCACc9A98c36eE1BBE")  # Düzeltildi
+dxsale_address = web3.to_checksum_address("0x6b4d6F732B49dD77B6C7aD784E0D0C067C4B5B43")
 locker_abi = [
     {
         "constant": True,
@@ -80,6 +80,7 @@ def get_dexscreener_tokens():
 # Likidite kilidi kontrolü
 def is_liquidity_locked(pair_address):
     try:
+        pair_address = web3.to_checksum_address(pair_address)
         locked_amount = unicrypt_contract.functions.getLockedTokens(pair_address).call()
         if locked_amount > 0:
             print(f"Unicrypt’te kilitli: {pair_address}")
@@ -98,12 +99,13 @@ def is_liquidity_locked(pair_address):
             return True
         print(f"Likidite kilitli değil: {pair_address}")
         return False
-    except:
-        print(f"Kilit kontrolü hatası: {pair_address}")
+    except Exception as e:
+        print(f"Kilit kontrolü hatası: {pair_address} ({e})")
         return False
 
 # Token verisi çek
 def get_pair_data(pair_address):
+    pair_address = web3.to_checksum_address(pair_address)
     pair_contract = web3.eth.contract(address=pair_address, abi=pair_abi)
     reserves = pair_contract.functions.getReserves().call()
     token0 = pair_contract.functions.token0().call()
@@ -198,7 +200,8 @@ def scan_tokens():
 
 # Alım işlemi
 def buy_token(token_address, pair_address):
-    path = [web3.to_checksum_address(wbnb_address), web3.to_checksum_address(token_address)]
+    token_address = web3.to_checksum_address(token_address)
+    path = [wbnb_address, token_address]
     amount_to_spend = web3.to_wei(float(os.getenv("AMOUNT_TO_SPEND", 0.0070)), "ether")
 
     try:
