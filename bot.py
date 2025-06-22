@@ -1,0 +1,132 @@
+from web3 import Web3
+import os
+import time
+import json
+import requests
+import pandas as pd
+from ta.trend import RSIIndicator
+from dotenv import load_dotenv
+
+# Ortam değişkenlerini yükle
+load_dotenv()
+
+# BSC ağına bağlan
+bsc = os.getenv("BSC_RPC_URL")
+web3 = Web3(Web3.HTTPProvider(bsc))
+
+# Cüzdan bilgileri
+private_key = os.getenv("PRIVATE_KEY")
+account = web3.eth.account.from_key(private_key)
+wallet_address = account.address
+
+# PancakeSwap Router ve Factory
+pancake_router_address = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+pancake_factory_address = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73"
+with open("pancakeswap_router_abi.json") as f:
+    pancake_router_abi = json.load(f)
+with open("pancakeswap_factory_abi.json") as f:
+    pancake_factory_abi = json.load(f)
+
+pancake_router = web3.eth.contract(address=pancake_router_address, abi=pancake_router_abi)
+pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake_factory_abi)
+
+# Token ABI
+with open("token_abi.json") as f:
+    token_abi = json.load(f)
+
+# Fiyat verisi çekme (örneğin DexScreener API)
+def get_token_data(token_address):
+    url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+    response = requests.get(url).json()
+    if response["pairs"]:
+        pair = response["pairs"][0]
+        return {
+            "price": float(pair["priceUsd"]),
+            "liquidity": float(pair["liquidity"]["usd"]),
+            "volume_1h": float(pair["volume"]["h1"]),
+            "price_history": [float(p["priceUsd"]) for p in pair.get("priceHistory", [])]
+        }
+    return None
+
+# RSI hesaplama
+def calculate_rsi(prices):
+    if len(prices) < 14:
+        return None
+    series = pd.Series(prices)
+    rsi = RSIIndicator(series, window=14).rsi()
+    return rsi.iloc[-1]
+
+# Token tarama
+def scan_tokens():
+    # Örnek: Sabit bir token listesi (gerçekte dinamik tarama gerekir)
+    token_list = [
+        "0x0E09FaBB73B087e7D9F1B8bE76B54D47F3A0F1E9",  # CAKE
+        "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56",  # BUSD
+        # Daha fazla token eklemek için PancakeSwap Factory'den pair'leri çek
+    ]
+    best_token = None
+    best_score = float("inf")
+
+    for token_address in token_list:
+        data = get_token_data(token_address)
+        if not data:
+            continue
+
+        # Filtreleme: Minimum likidite
+        if data["liquidity"] < float(os.getenv("MIN_LIQUIDITY", 10000)):
+            continue
+
+        # Hacim artışı kontrolü
+        volume_ratio = data["volume_1h"] / (data["volume_1h"] * 0.5) if data["volume_1h"] else 0
+        if volume_ratio < float(os.getenv("VOLUME_THRESHOLD", 1.5)):
+            continue
+
+        # RSI hesaplama
+        rsi = calculate_rsi(data["price_history"])
+        if rsi is None or rsi > float(os.getenv("RSI_THRESHOLD", 30)):
+            continue
+
+        # Skor: RSI ve hacim kombinasyonu
+        score = rsi / volume_ratio
+        if score < best_score:
+            best_score = score
+            best_token = token_address
+
+    return best_token
+
+# Alım işlemi
+def buy_token(token_address):
+    path = [web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),  # WBNB
+            web3.to_checksum_address(token_address)]
+    amount_to_spend = web3.to_wei(float(os.getenv("AMOUNT_TO_SPEND", 0.1)), "ether")
+
+    tx = pancake_router.functions.swapExactETHForTokens(
+        0,
+        path,
+        wallet_address,
+        int(time.time()) + 60
+    ).build_transaction({
+        "from": wallet_address,
+        "value": amount_to_spend,
+        "gas": 200000,
+        "gasPrice": web3.to_wei("5", "gwei"),
+        "nonce": web3.eth.get_transaction_count(wallet_address)
+    })
+    signed_tx = web3.eth.account.sign_transaction(tx, private_key)
+    tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    print(f"Alım işlemi: {tx_hash.hex()}")
+
+# Ana döngü
+if __name__ == "__main__":
+    while True:
+        try:
+            token_to_buy = scan_tokens()
+            if token_to_buy:
+                print(f"En uygun token: {token_to_buy}")
+                buy_token(token_to_buy)
+            else:
+                print("Uygun token bulunamadı.")
+            time.sleep(int(os.getenv("CHECK_INTERVAL", 60)))
+        except Exception as e:
+            print(f"Hata: {e}")
+            time.sleep(60)
