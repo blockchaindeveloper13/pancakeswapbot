@@ -28,8 +28,8 @@ with open("pancakeswap_factory_abi.json") as f:
     pancake_factory_abi = json.load(f)
 with open("pair_abi.json") as f:
     pair_abi = json.load(f)
-with open("erc20_abi.json") as f:
-    erc20_abi = json.load(f)
+with open("bep20_abi.json") as f:
+    bep20_abi = json.load(f)
 
 pancake_router = web3.eth.contract(address=pancake_router_address, abi=pancake_router_abi)
 pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake_factory_abi)
@@ -219,9 +219,10 @@ def buy_token(token_address, pair_address):
         receipt = web3.eth.wait_for_transaction_receipt(tx_hash)
 
         # Alınan token miktarını bul
-        token_contract = web3.eth.contract(address=token_address, abi=erc20_abi)
+        token_contract = web3.eth.contract(address=token_address, abi=bep20_abi)
         token_amount = token_contract.functions.balanceOf(wallet_address).call() / 10**18
         price = get_current_price(pair_address)
+        take_profit_price = price * 1.10  # %10 kâr hedefi
 
         portfolio[token_address] = {
             "buy_price": price,
@@ -229,7 +230,7 @@ def buy_token(token_address, pair_address):
             "amount": token_amount,
             "pair_address": pair_address
         }
-        print(f"Alım işlemi: {tx_hash.hex()}, Miktar: {token_amount}, Fiyat: {price} USD")
+        print(f"Alım işlemi: {tx_hash.hex()}, Miktar: {token_amount}, Fiyat: {price} USD, Kâr al hedefi: {take_profit_price} USD")
     except Exception as e:
         print(f"Alım hatası: {e}")
 
@@ -239,7 +240,7 @@ def sell_token(token_address):
     if not token_data:
         return
 
-    token_contract = web3.eth.contract(address=token_address, abi=erc20_abi)
+    token_contract = web3.eth.contract(address=token_address, abi=bep20_abi)
     amount_to_sell = int(token_data["amount"] * 10**18)
 
     # Onay ver
