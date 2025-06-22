@@ -35,7 +35,7 @@ pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake
 wbnb_address = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 
 # Unicrypt kilit sözleşmesi
-unicrypt_locker_address = "0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214"  # BSC Unicrypt
+unicrypt_locker_address = "0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214"
 unicrypt_abi = [
     {
         "constant": True,
@@ -47,25 +47,30 @@ unicrypt_abi = [
 ]
 unicrypt_contract = web3.eth.contract(address=unicrypt_locker_address, abi=unicrypt_abi)
 
-# DexScreener’dan token verisi çek
+# DexScreener’dan token profilleri çek
 def get_dexscreener_tokens():
-    url = "https://api.dexscreener.com/latest/dex/pairs/bsc?limit=100"
+    url = "https://api.dexscreener.com/token-profiles/latest/v1"
     headers = {}
     if os.getenv("DEXSCREENER_API_KEY"):
         headers["Authorization"] = f"Bearer {os.getenv('DEXSCREENER_API_KEY')}"
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
-        return response.json().get("pairs", [])
+        profiles = response.json()
+        # Profilleri logla
+        print("DexScreener Token Profilleri:")
+        for profile in profiles[:10]:  # İlk 10 profili logla (çok fazla olmaması için)
+            print(json.dumps(profile, indent=2))
+        return profiles
     except Exception as e:
         print(f"DexScreener hatası: {e}")
         return []
 
-# Likidite kilidi kontrolü (Unicrypt fallback)
+# Likidite kilidi kontrolü (Unicrypt)
 def is_liquidity_locked(pair_address):
     try:
         locked_amount = unicrypt_contract.functions.getLockedTokens(pair_address).call()
-        return locked_amount > 0  # Kilitli LP token varsa True
+        return locked_amount > 0
     except:
         return False
 
@@ -76,17 +81,14 @@ def get_pair_data(pair_address):
     token0 = pair_contract.functions.token0().call()
     token1 = pair_contract.functions.token1().call()
 
-    # Token sırasını kontrol et
     is_wbnb_token0 = token0.lower() == wbnb_address.lower()
     reserve_wbnb = reserves[0] if is_wbnb_token0 else reserves[1]
     reserve_token = reserves[1] if is_wbnb_token0 else reserves[0]
     
-    # Fiyat: WBNB cinsinden
     if reserve_wbnb == 0:
         return None
     price = reserve_token / reserve_wbnb
     
-    # Likidite: USD cinsinden (WBNB = 300 USD)
     liquidity_usd = (reserve_wbnb / 10**18) * 300
     
     token_address = token1 if is_wbnb_token0 else token0
@@ -99,21 +101,44 @@ def get_pair_data(pair_address):
 
 # Token tarama
 def scan_tokens():
-    dexscreener_pairs = get_dexscreener_tokens()
-    if not dexscreener_pairs:
+    profiles = get_dexscreener_tokens()
+    if not profiles:
         return None
     
     best_token = None
     best_score = float("inf")
     
-    # İlk 50 pair’i tara (Ankr limiti için)
-    for pair in dexscreener_pairs[:50]:
-        token_address = pair.get("baseToken", {}).get("address")
-        pair_address = pair.get("pairAddress")
-        created_at = pair.get("pairCreatedAt")
-        market_cap = pair.get("marketCap", float("inf"))
-        volume_24h = pair.get("volume", {}).get("h24", 0)
-        liquidity_usd = pair.get("liquidity", {}).get("usd", 0)
+    # Profillerden BSC chain’ine ait olanları tara
+    for profile in profiles[:50]:  # 50 profil için (Ankr limiti)
+        token_address = profile.get("tokenAddress")
+        chain_id = profile.get("chainId")
+        if chain_id != "bsc":  # Sadece BSC token’ları
+            continue
+        
+        # Pair adresini bulmak için PancakeSwap Factory’yi sorgula
+        pair_address = pancake_factory.functions.getPair(
+            web3.to_checksum_address(token_address),
+            web3.to_checksum_address(wbnb_address)
+        ).call()
+        if pair_address == "0x0000000000000000000000000000000000000000":
+            continue
+
+        # DexScreener’dan pair verisi çek
+        pair_url = f"https://api.dexscreener.com/latest/dex/pairs/bsc/{pair_address}"
+        headers = {}
+        if os.getenv("DEXSCREENER_API_KEY"):
+            headers["Authorization"] = f"Bearer {os.getenv('DEXSCREENER_API_KEY')}"
+        try:
+            pair_response = requests.get(pair_url, headers=headers)
+            pair_response.raise_for_status()
+            pair_data = pair_response.json().get("pairs", [])[0]
+        except:
+            continue
+
+        created_at = pair_data.get("pairCreatedAt")
+        market_cap = pair_data.get("marketCap", float("inf"))
+        volume_24h = pair_data.get("volume", {}).get("h24", 0)
+        liquidity_usd = pair_data.get("liquidity", {}).get("usd", 0)
 
         # Yeni listelenmiş mi? (son 48 saat)
         if not created_at:
@@ -122,11 +147,9 @@ def scan_tokens():
         if datetime.now() - created_time > timedelta(hours=48):
             continue
 
-        # Likidite kilidi kontrolü
-        liquidity_locked = pair.get("liquidity", {}).get("lockedPercentage", 0)
-        if liquidity_locked < 100:
-            if not is_liquidity_locked(pair_address):
-                continue
+        # Likidite kilidi kontrolü (Unicrypt)
+        if not is_liquidity_locked(pair_address):
+            continue
 
         # Moonshot potansiyeli
         if market_cap > 500000 or volume_24h < 100000:
@@ -145,7 +168,7 @@ def scan_tokens():
             continue
 
         # Skor: Volume/Market Cap oranı
-        score = 1 / volume_to_market_cap  # Daha yüksek oran, daha düşük skor
+        score = 1 / volume_to_market_cap
         if score < best_score:
             best_score = score
             best_token = token_address
