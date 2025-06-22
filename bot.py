@@ -2,8 +2,8 @@ from web3 import Web3
 import os
 import time
 import json
+import pandas as pd
 import pandas_ta as ta
-from ta.trend import RSIIndicator
 from dotenv import load_dotenv
 
 # Ortam değişkenlerini yükle
@@ -81,7 +81,7 @@ def calculate_rsi(prices):
     series = pd.Series(prices)
     rsi = ta.rsi(series, length=14)
     return rsi.iloc[-1]
-    
+
 # Token tarama
 def scan_tokens():
     pair_count = pancake_factory.functions.allPairsLength().call()
