@@ -36,7 +36,7 @@ wbnb_address = web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc0
 # Kilit sözleşmeleri
 unicrypt_locker_address = web3.to_checksum_address("0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214")
 team_finance_address = web3.to_checksum_address("0xE2fE530C047f2d85298b07D9333C05737f1435fB")
-pinklock_address = web3.to_checksum_address("0x407993575c91ce7643a4d4cCACc9A98c36eE1BBE")  # Düzeltildi
+pinklock_address = web3.to_checksum_address("0x407993575c91ce7643a4d4cCACc9A98c36eE1BBE")
 dxsale_address = web3.to_checksum_address("0x6b4d6F732B49dD77B6C7aD784E0D0C067C4B5B43")
 locker_abi = [
     {
@@ -68,7 +68,9 @@ def get_dexscreener_tokens():
                 "chainId": pair.get("chainId"),
                 "pairAddress": pair.get("pairAddress"),
                 "baseToken": pair.get("baseToken", {}).get("address"),
+                "priceUsd": pair.get("priceUsd"),
                 "marketCap": pair.get("marketCap"),
+                "fdv": pair.get("fdv"),
                 "volume.h24": pair.get("volume", {}).get("h24"),
                 "liquidity.usd": pair.get("liquidity", {}).get("usd")
             }, indent=2))
@@ -103,7 +105,7 @@ def is_liquidity_locked(pair_address):
         print(f"Kilit kontrolü hatası: {pair_address} ({e})")
         return False
 
-# Token verisi çek
+# Token verisi çek (PancakeSwap’tan likidite doğrulama)
 def get_pair_data(pair_address):
     pair_address = web3.to_checksum_address(pair_address)
     pair_contract = web3.eth.contract(address=pair_address, abi=pair_abi)
@@ -129,7 +131,7 @@ def get_pair_data(pair_address):
         "liquidity": liquidity_usd
     }
 
-# Mevcut fiyatı çek
+# Mevcut fiyatı çek (DexScreener)
 def get_current_price(pair_address):
     url = f"https://api.dexscreener.com/latest/dex/pairs/bsc/{pair_address}"
     try:
@@ -156,6 +158,7 @@ def scan_tokens():
         market_cap = pair.get("marketCap", float("inf"))
         volume_24h = pair.get("volume", {}).get("h24", 0)
         liquidity_usd = pair.get("liquidity", {}).get("usd", 0)
+        price_usd = pair.get("priceUsd", 0)
         chain_id = pair.get("chainId")
 
         if chain_id != "bsc":
@@ -178,15 +181,15 @@ def scan_tokens():
             print(f"Volume/market cap düşük: {pair_address} ({volume_to_market_cap})")
             continue
 
-        # PancakeSwap’tan veri çek
+        # PancakeSwap’tan likidite doğrulama
         data = get_pair_data(pair_address)
         if not data or data["token_address"].lower() != token_address.lower():
             print(f"PancakeSwap verisi uyumsuz: {pair_address}")
             continue
 
         # Filtreleme: Minimum likidite
-        if data["liquidity"] < float(os.getenv("MIN_LIQUIDITY", 1000)):
-            print(f"Likidite düşük: {pair_address} ({data['liquidity']})")
+        if liquidity_usd < float(os.getenv("MIN_LIQUIDITY", 1000)):
+            print(f"Likidite düşük: {pair_address} ({liquidity_usd})")
             continue
 
         # Skor: Volume/Market Cap oranı
@@ -194,7 +197,7 @@ def scan_tokens():
         if score < best_score:
             best_score = score
             best_token = token_address
-            print(f"Potansiyel token: {best_token} (score: {score})")
+            print(f"Potansiyel token: {best_token} (score: {score}, priceUsd: {price_usd})")
 
     return best_token
 
