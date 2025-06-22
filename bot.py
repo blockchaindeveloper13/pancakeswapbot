@@ -2,7 +2,6 @@ from web3 import Web3
 import os
 import time
 import json
-import requests
 import pandas as pd
 from ta.trend import RSIIndicator
 from dotenv import load_dotenv
@@ -26,32 +25,54 @@ with open("pancakeswap_router_abi.json") as f:
     pancake_router_abi = json.load(f)
 with open("pancakeswap_factory_abi.json") as f:
     pancake_factory_abi = json.load(f)
+with open("pair_abi.json") as f:
+    pair_abi = json.load(f)
 
 pancake_router = web3.eth.contract(address=pancake_router_address, abi=pancake_router_abi)
 pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake_factory_abi)
 
-# Token ABI
-with open("token_abi.json") as f:
-    token_abi = json.load(f)
+# WBNB adresi
+wbnb_address = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 
-# Pair ABI (likidite havuzları için)
-with open("pair_abi.json") as f:
-    pair_abi = json.load(f)
+# Fiyat ve likidite hesaplama
+def get_pair_data(pair_address):
+    pair_contract = web3.eth.contract(address=pair_address, abi=pair_abi)
+    reserves = pair_contract.functions.getReserves().call()
+    token0 = pair_contract.functions.token0().call()
+    token1 = pair_contract.functions.token1().call()
 
-# Fiyat verisi çekme (DexScreener API)
-def get_token_data(pair_address):
-    url = f"https://api.dexscreener.com/latest/dex/pairs/bsc/{pair_address}"
-    response = requests.get(url).json()
-    if response["pairs"]:
-        pair = response["pairs"][0]
-        return {
-            "price": float(pair["priceUsd"]),
-            "liquidity": float(pair["liquidity"]["usd"]),
-            "volume_1h": float(pair["volume"]["h1"]),
-            "price_history": [float(p["priceUsd"]) for p in pair.get("priceHistory", [])],
-            "token_address": pair["baseToken"]["address"]
-        }
-    return None
+    # Token sırasını kontrol et (WBNB/TOKEN veya TOKEN/WBNB)
+    is_wbnb_token0 = token0.lower() == wbnb_address.lower()
+    reserve_wbnb = reserves[0] if is_wbnb_token0 else reserves[1]
+    reserve_token = reserves[1] if is_wbnb_token0 else reserves[0]
+    
+    # Fiyat: WBNB cinsinden
+    if reserve_wbnb == 0:
+        return None
+    price = reserve_token / reserve_wbnb
+    
+    # Likidite: Yaklaşık USD cinsinden (WBNB fiyatını sabit 300 USD varsayalım)
+    liquidity_usd = (reserve_wbnb / 10**18) * 300
+    
+    # Fiyat geçmişi (basitlik için son 14 bloğu alalım)
+    price_history = []
+    for i in range(14):
+        try:
+            past_block = web3.eth.get_block_number() - (i * 100)
+            past_reserves = pair_contract.functions.getReserves().call(block_identifier=past_block)
+            past_price = (past_reserves[1] / past_reserves[0]) if is_wbnb_token0 else (past_reserves[0] / past_reserves[1])
+            price_history.append(past_price)
+        except:
+            price_history.append(price)
+    
+    token_address = token1 if is_wbnb_token0 else token0
+    
+    return {
+        "token_address": token_address,
+        "price": price,
+        "liquidity": liquidity_usd,
+        "price_history": price_history
+    }
 
 # RSI hesaplama
 def calculate_rsi(prices):
@@ -63,17 +84,16 @@ def calculate_rsi(prices):
 
 # Token tarama
 def scan_tokens():
-    # Tüm pair'leri çek
     pair_count = pancake_factory.functions.allPairsLength().call()
     print(f"Toplam {pair_count} pair bulundu.")
     
     best_token = None
     best_score = float("inf")
     
-    # İlk 100 pair'i tara (performans için sınırlı, artırılabilir)
+    # İlk 100 pair'i tara (performans için)
     for i in range(min(100, pair_count)):
         pair_address = pancake_factory.functions.allPairs(i).call()
-        data = get_token_data(pair_address)
+        data = get_pair_data(pair_address)
         if not data:
             continue
 
@@ -81,18 +101,13 @@ def scan_tokens():
         if data["liquidity"] < float(os.getenv("MIN_LIQUIDITY", 10000)):
             continue
 
-        # Hacim artışı kontrolü
-        volume_ratio = data["volume_1h"] / (data["volume_1h"] * 0.5) if data["volume_1h"] else 0
-        if volume_ratio < float(os.getenv("VOLUME_THRESHOLD", 1.5)):
-            continue
-
         # RSI hesaplama
         rsi = calculate_rsi(data["price_history"])
         if rsi is None or rsi > float(os.getenv("RSI_THRESHOLD", 30)):
             continue
 
-        # Skor: RSI ve hacim kombinasyonu
-        score = rsi / volume_ratio
+        # Skor: RSI bazlı
+        score = rsi
         if score < best_score:
             best_score = score
             best_token = data["token_address"]
@@ -101,8 +116,7 @@ def scan_tokens():
 
 # Alım işlemi
 def buy_token(token_address):
-    path = [web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),  # WBNB
-            web3.to_checksum_address(token_address)]
+    path = [web3.to_checksum_address(wbnb_address), web3.to_checksum_address(token_address)]
     amount_to_spend = web3.to_wei(float(os.getenv("AMOUNT_TO_SPEND", 0.1)), "ether")
 
     tx = pancake_router.functions.swapExactETHForTokens(
