@@ -1,0 +1,5 @@
+web3.py==5.31.3
+python-dotenv==1.0.0
+requests==2.28.1
+ta==0.10.2  # Teknik analiz için (RSI, MA vb.)
+pandas==1.5.3  # Fiyat verilerini işlemek için
