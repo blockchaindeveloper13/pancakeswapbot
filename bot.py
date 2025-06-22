@@ -57,10 +57,14 @@ def get_dexscreener_tokens():
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         profiles = response.json()
-        # Profilleri logla
-        print("DexScreener Token Profilleri:")
-        for profile in profiles[:10]:  # İlk 10 profili logla (çok fazla olmaması için)
-            print(json.dumps(profile, indent=2))
+        # BSC profillerini logla
+        bsc_profiles = [p for p in profiles if p.get("chainId") == "bsc"]
+        if bsc_profiles:
+            print("DexScreener BSC Token Profilleri:")
+            for profile in bsc_profiles[:10]:  # İlk 10 BSC profili
+                print(json.dumps(profile, indent=2))
+        else:
+            print("BSC profili bulunamadı.")
         return profiles
     except Exception as e:
         print(f"DexScreener hatası: {e}")
@@ -108,14 +112,14 @@ def scan_tokens():
     best_token = None
     best_score = float("inf")
     
-    # Profillerden BSC chain’ine ait olanları tara
-    for profile in profiles[:50]:  # 50 profil için (Ankr limiti)
+    # Sadece BSC profillerini tara
+    for profile in profiles[:50]:
         token_address = profile.get("tokenAddress")
         chain_id = profile.get("chainId")
-        if chain_id != "bsc":  # Sadece BSC token’ları
+        if chain_id != "bsc":
             continue
         
-        # Pair adresini bulmak için PancakeSwap Factory’yi sorgula
+        # Pair adresini bul
         pair_address = pancake_factory.functions.getPair(
             web3.to_checksum_address(token_address),
             web3.to_checksum_address(wbnb_address)
@@ -147,7 +151,7 @@ def scan_tokens():
         if datetime.now() - created_time > timedelta(hours=48):
             continue
 
-        # Likidite kilidi kontrolü (Unicrypt)
+        # Likidite kilidi kontrolü
         if not is_liquidity_locked(pair_address):
             continue
 
