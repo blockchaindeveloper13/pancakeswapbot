@@ -2,7 +2,7 @@ from web3 import Web3
 import os
 import time
 import json
-import pandas as pd
+import pandas_ta as ta
 from ta.trend import RSIIndicator
 from dotenv import load_dotenv
 
@@ -79,9 +79,9 @@ def calculate_rsi(prices):
     if len(prices) < 14:
         return None
     series = pd.Series(prices)
-    rsi = RSIIndicator(series, window=14).rsi()
+    rsi = ta.rsi(series, length=14)
     return rsi.iloc[-1]
-
+    
 # Token tarama
 def scan_tokens():
     pair_count = pancake_factory.functions.allPairsLength().call()
