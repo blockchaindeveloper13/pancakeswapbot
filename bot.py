@@ -33,25 +33,6 @@ pancake_factory = web3.eth.contract(address=pancake_factory_address, abi=pancake
 # WBNB adresi
 wbnb_address = web3.to_checksum_address("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c")
 
-# Kilit sözleşmeleri
-unicrypt_locker_address = web3.to_checksum_address("0x663A5C229c09b049E36dCc11a9B0d4a8Eb9db214")
-team_finance_address = web3.to_checksum_address("0xE2fE530C047f2d85298b07D9333C05737f1435fB")
-pinklock_address = web3.to_checksum_address("0x407993575c91ce7643a4d4cCACc9A98c36eE1BBE")
-dxsale_address = web3.to_checksum_address("0x6b4d6F732B49dD77B6C7aD784E0D0C067C4B5B43")
-locker_abi = [
-    {
-        "constant": True,
-        "inputs": [{"name": "lpToken", "type": "address"}],
-        "name": "getLockedTokens",
-        "outputs": [{"name": "", "type": "uint256"}],
-        "type": "function"
-    }
-]
-unicrypt_contract = web3.eth.contract(address=unicrypt_locker_address, abi=locker_abi)
-team_finance_contract = web3.eth.contract(address=team_finance_address, abi=locker_abi)
-pinklock_contract = web3.eth.contract(address=pinklock_address, abi=locker_abi)
-dxsale_contract = web3.eth.contract(address=dxsale_address, abi=locker_abi)
-
 # DexScreener’dan PancakeSwap pair’lerini çek
 def get_dexscreener_tokens():
     url = "https://api.dexscreener.com/latest/dex/search?q=pancakeswap"
@@ -79,57 +60,35 @@ def get_dexscreener_tokens():
         print(f"DexScreener hatası: {e}")
         return []
 
-# Likidite kilidi kontrolü
-def is_liquidity_locked(pair_address):
-    try:
-        pair_address = web3.to_checksum_address(pair_address)
-        locked_amount = unicrypt_contract.functions.getLockedTokens(pair_address).call()
-        if locked_amount > 0:
-            print(f"Unicrypt’te kilitli: {pair_address}")
-            return True
-        locked_amount = team_finance_contract.functions.getLockedTokens(pair_address).call()
-        if locked_amount > 0:
-            print(f"Team.Finance’te kilitli: {pair_address}")
-            return True
-        locked_amount = pinklock_contract.functions.getLockedTokens(pair_address).call()
-        if locked_amount > 0:
-            print(f"PinkLock’ta kilitli: {pair_address}")
-            return True
-        locked_amount = dxsale_contract.functions.getLockedTokens(pair_address).call()
-        if locked_amount > 0:
-            print(f"DxSale’de kilitli: {pair_address}")
-            return True
-        print(f"Likidite kilitli değil: {pair_address}")
-        return False
-    except Exception as e:
-        print(f"Kilit kontrolü hatası: {pair_address} ({e})")
-        return False
-
 # Token verisi çek (PancakeSwap’tan likidite doğrulama)
 def get_pair_data(pair_address):
     pair_address = web3.to_checksum_address(pair_address)
     pair_contract = web3.eth.contract(address=pair_address, abi=pair_abi)
-    reserves = pair_contract.functions.getReserves().call()
-    token0 = pair_contract.functions.token0().call()
-    token1 = pair_contract.functions.token1().call()
+    try:
+        reserves = pair_contract.functions.getReserves().call()
+        token0 = pair_contract.functions.token0().call()
+        token1 = pair_contract.functions.token1().call()
 
-    is_wbnb_token0 = token0.lower() == wbnb_address.lower()
-    reserve_wbnb = reserves[0] if is_wbnb_token0 else reserves[1]
-    reserve_token = reserves[1] if is_wbnb_token0 else reserves[0]
-    
-    if reserve_wbnb == 0:
+        is_wbnb_token0 = token0.lower() == wbnb_address.lower()
+        reserve_wbnb = reserves[0] if is_wbnb_token0 else reserves[1]
+        reserve_token = reserves[1] if is_wbnb_token0 else reserves[0]
+        
+        if reserve_wbnb == 0:
+            return None
+        price = reserve_token / reserve_wbnb
+        
+        liquidity_usd = (reserve_wbnb / 10**18) * 300
+        
+        token_address = token1 if is_wbnb_token0 else token0
+        
+        return {
+            "token_address": token_address,
+            "price": price,
+            "liquidity": liquidity_usd
+        }
+    except Exception as e:
+        print(f"PancakeSwap veri hatası: {pair_address} ({e})")
         return None
-    price = reserve_token / reserve_wbnb
-    
-    liquidity_usd = (reserve_wbnb / 10**18) * 300
-    
-    token_address = token1 if is_wbnb_token0 else token0
-    
-    return {
-        "token_address": token_address,
-        "price": price,
-        "liquidity": liquidity_usd
-    }
 
 # Mevcut fiyatı çek (DexScreener)
 def get_current_price(pair_address):
@@ -159,14 +118,11 @@ def scan_tokens():
         volume_24h = pair.get("volume", {}).get("h24", 0)
         liquidity_usd = pair.get("liquidity", {}).get("usd", 0)
         price_usd = pair.get("priceUsd", 0)
+        fdv = pair.get("fdv", float("inf"))
         chain_id = pair.get("chainId")
 
         if chain_id != "bsc":
             print(f"BSC değil: {pair_address} ({chain_id})")
-            continue
-
-        # Likidite kilidi kontrolü (zorunlu)
-        if not is_liquidity_locked(pair_address):
             continue
 
         # Moonshot potansiyeli
@@ -197,7 +153,7 @@ def scan_tokens():
         if score < best_score:
             best_score = score
             best_token = token_address
-            print(f"Potansiyel token: {best_token} (score: {score}, priceUsd: {price_usd})")
+            print(f"Potansiyel token: {best_token} (score: {score}, priceUsd: {price_usd}, fdv: {fdv})")
 
     return best_token
 
